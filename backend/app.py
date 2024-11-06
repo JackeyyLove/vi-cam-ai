@@ -9,7 +9,7 @@ import threading
 
 # Initialize Flask app and Flask-SocketIO
 app = Flask(__name__)
-socketio = SocketIO(app, cors_allowed_origins="*", async_mode='eventlet')
+socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
 
 # RTSP URL for IP camera
 RTSP_URL = "rtsp://admin:OINVHA@192.168.122.32:554/ch1/main"
@@ -64,7 +64,7 @@ def capture_and_process_stream():
         socketio.emit('frame', {'image': img_base64})
 
         # Call the asynchronous API function
-        send_image_to_api_async(img_base64)
+        #send_image_to_api_async(img_base64)
 
         # Frame delay to control stream rate (adjust as needed)
         time.sleep(1)
