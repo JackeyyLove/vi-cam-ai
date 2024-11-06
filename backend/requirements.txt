@@ -1,3 +1,9 @@
 Flask
 Flask-SQLAlchemy
 pymysql
+opencv-python
+requests
+flask-socketio
+eventlet
+aiortc
+av
