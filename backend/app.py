@@ -1,99 +1,91 @@
-from flask import Flask, request, jsonify, render_template
-from flask_socketio import SocketIO
 import cv2
 import base64
 import requests
-import threading
+import json
 import time
-from aiortc import RTCPeerConnection, RTCSessionDescription, VideoStreamTrack
-import asyncio
-from av import VideoFrame
+from flask import Flask, render_template
+from flask_socketio import SocketIO, emit
+import threading
 
+# Initialize Flask app and Flask-SocketIO
 app = Flask(__name__)
-app.config['SECRET_KEY'] = 'secret!'
-socketio = SocketIO(app)
-# Variables
-RTSP_URL = "rtsp://your_camera_ip_address"
+socketio = SocketIO(app, cors_allowed_origins="*", async_mode='eventlet')
+
+# RTSP URL for IP camera
+RTSP_URL = "rtsp://admin:OINVHA@192.168.122.32:554/ch1/main"
+
+# AI server URL
 AI_SERVER_URL = "https://equally-in-glowworm.ngrok-free.app/fire-detect"
 
-# Function to send the image and receive response
-def send_image_to_ai_server(base64_image):
-    headers = {"Content-Type": "application/json"}
-    data = {"image": base64_image}
-    try:
-        response = requests.post(AI_SERVER_URL, json=data, headers=headers)
-        if response.status_code == 200:
-            return response.json()
-        else:
-            return {"error": response.status_code, "message": response.text}
-    except Exception as e:
-        return {"error": "exception", "message": str(e)}
+# Function to send image to AI server asynchronously
+def send_image_to_api_async(base64_image):
+    headers = {
+        "Content-Type": "application/json"
+    }
+    data = {
+        "image": base64_image  # The Base64 encoded image string
+    }
 
-# Stream video using WebRTC
-class CameraStreamTrack(VideoStreamTrack):
-    def __init__(self):
-        super().__init__()
-        self.cap = cv2.VideoCapture(RTSP_URL)
-        self.loop = asyncio.get_event_loop()
+    # Send request in a separate thread
+    def send_request():
+        try:
+            response = requests.post(AI_SERVER_URL, json=data, headers=headers)
+            if response.status_code == 200:
+                result = response.json()
+                print("AI Response Success:", result)
+                # Emit the AI result to the connected clients
+                socketio.emit('ai_result', result)
+            else:
+                print("AI Response Error:", response.status_code, response.text)
+        except Exception as e:
+            print("Exception occurred while calling AI server:", str(e))
 
-    async def recv(self):
-        if not self.cap.isOpened():
-            print("Error: Cannot open video stream.")
-            return
+    threading.Thread(target=send_request).start()
 
-        ret, frame = self.cap.read()
+# Function to process and send frames
+def capture_and_process_stream():
+    cap = cv2.VideoCapture(RTSP_URL)
+
+    while cap.isOpened():
+        ret, frame = cap.read()
         if not ret:
-            return
+            print("Failed to grab frame")
+            break
 
-        # Convert frame to Base64 for AI server
-        _, buffer = cv2.imencode('.jpg', frame)
+        # Resize the frame for easier handling and encoding
+        resized_frame = cv2.resize(frame, (640, 480))
+
+        # Convert frame to JPEG format and encode as base64 for WebSocket
+        _, buffer = cv2.imencode('.jpg', resized_frame)
         img_bytes = buffer.tobytes()
         img_base64 = base64.b64encode(img_bytes).decode('utf-8')
 
-        # Get response from AI server
-        response = send_image_to_ai_server(img_base64)
-        
-        # Draw AI response (bounding boxes) on the frame if detection is positive
-        if response.get("status"):
-            for detection in response["result"]:
-                class_id = int(detection["class"])
-                score = detection["confidence_score"]
-                x1, y1, x2, y2 = map(int, detection["coords"])
-                color = (0, 0, 255) if class_id == 1 else (0, 255, 0)
-                cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
-                label = f"Fire {score:.2f}" if class_id == 1 else f"No Fire {score:.2f}"
-                cv2.putText(frame, label, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+        # Send the frame to the WebSocket clients
+        socketio.emit('frame', {'image': img_base64})
 
-        # Convert frame for WebRTC
-        frame = VideoFrame.from_ndarray(frame, format="bgr24")
-        frame.pts, frame.time_base = await self.next_timestamp()
-        return frame
+        # Call the asynchronous API function
+        send_image_to_api_async(img_base64)
 
-# WebRTC endpoint
-@app.route("/offer", methods=["POST"])
-async def offer():
-    params = await request.json
-    offer = RTCSessionDescription(sdp=params["sdp"], type=params["type"])
+        # Frame delay to control stream rate (adjust as needed)
+        time.sleep(1)
 
-    pc = RTCPeerConnection()
-    pc.addTrack(CameraStreamTrack())
+    cap.release()
 
-    @pc.on("icecandidate")
-    def on_icecandidate(event):
-        socketio.emit("icecandidate", event.candidate)
-
-    await pc.setRemoteDescription(offer)
-    answer = await pc.createAnswer()
-    await pc.setLocalDescription(answer)
-
-    return jsonify({
-        "sdp": pc.localDescription.sdp,
-        "type": pc.localDescription.type
-    })
-
+# Endpoint for the web interface
 @app.route('/')
 def index():
     return render_template('index.html')
 
-if __name__ == "__main__":
-    socketio.run(app, debug=True)
+# Start capturing stream in a background thread
+@socketio.on('connect')
+def on_connect():
+    print("Client connected")
+    socketio.start_background_task(target=capture_and_process_stream)
+
+@socketio.on('disconnect')
+def on_disconnect():
+    print("Client disconnected")
+
+# Run the app
+if __name__ == '__main__':
+    socketio.run(app, host='0.0.0.0', port=5000)

@@ -2,44 +2,42 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>Real-Time Camera Stream with AI Alerts</title>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.3.2/socket.io.min.js"></script>
+    <title>IP Camera Stream and AI Detection</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.1/socket.io.min.js"></script>
 </head>
 <body>
-    <h1>Real-Time Monitoring</h1>
-    <video id="video" autoplay playsinline></video>
+    <h1>IP Camera Stream</h1>
+    <img id="video" width="640" height="480" />
+    <h2>AI Detection Result</h2>
+    <pre id="ai-result"></pre>
+
     <script>
-        const video = document.getElementById('video');
-        let pc = null;
+        const socket = io.connect("http://localhost:5000");
+        socket.on('connect', function() {
+            console.log('WebSocket connected!');
+        });
 
-        async function startWebRTC() {
-            pc = new RTCPeerConnection();
+        socket.on('disconnect', function() {
+            console.log('WebSocket disconnected!');
+        });
 
-            pc.ontrack = (event) => {
-                video.srcObject = event.streams[0];
-            };
+        socket.on('connect_error', function(err) {
+            console.error("WebSocket connection error: ", err);
+        });
 
-            const offer = await pc.createOffer();
-            await pc.setLocalDescription(offer);
+        socket.on('error', function(err) {
+            console.error("WebSocket error: ", err);
+        });
 
-            const response = await fetch('/offer', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json'
-                },
-                body: JSON.stringify({ sdp: pc.localDescription.sdp, type: pc.localDescription.type })
-            });
+        // Listen for video frame updates
+        socket.on("frame", (data) => {
+            document.getElementById("video").src = "data:image/jpeg;base64," + data.image;
+        });
 
-            const answer = await response.json();
-            await pc.setRemoteDescription(new RTCSessionDescription(answer));
-
-            const socket = io();
-            socket.on("icecandidate", (candidate) => {
-                pc.addIceCandidate(candidate);
-            });
-        }
-
-        startWebRTC();
+        // Listen for AI detection results
+        socket.on("ai_result", (data) => {
+            document.getElementById("ai-result").textContent = JSON.stringify(data, null, 2);
+        });
     </script>
 </body>
 </html>
