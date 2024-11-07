@@ -1,91 +1,91 @@
+from flask import Flask, render_template, Response, request, jsonify, redirect, url_for
+from aiortc import RTCPeerConnection, RTCSessionDescription
 import cv2
-import base64
-import requests
 import json
+import uuid
+import asyncio
+import logging
 import time
-from flask import Flask, render_template
-from flask_socketio import SocketIO, emit
-import threading
 
-# Initialize Flask app and Flask-SocketIO
-app = Flask(__name__)
-socketio = SocketIO(app, cors_allowed_origins="*", async_mode='eventlet')
+# Create a Flask app instance
+app = Flask(__name__, static_url_path='/static')
 
-# RTSP URL for IP camera
-RTSP_URL = "rtsp://admin:OINVHA@192.168.122.32:554/ch1/main"
+# Set to keep track of RTCPeerConnection instances
+pcs = set()
+camera_id = 0  # replace with "rtsp://admin:OINVHA@192.168.122.32:554/ch1/main"
 
-# AI server URL
-AI_SERVER_URL = "https://equally-in-glowworm.ngrok-free.app/fire-detect"
 
-# Function to send image to AI server asynchronously
-def send_image_to_api_async(base64_image):
-    headers = {
-        "Content-Type": "application/json"
-    }
-    data = {
-        "image": base64_image  # The Base64 encoded image string
-    }
-
-    # Send request in a separate thread
-    def send_request():
-        try:
-            response = requests.post(AI_SERVER_URL, json=data, headers=headers)
-            if response.status_code == 200:
-                result = response.json()
-                print("AI Response Success:", result)
-                # Emit the AI result to the connected clients
-                socketio.emit('ai_result', result)
-            else:
-                print("AI Response Error:", response.status_code, response.text)
-        except Exception as e:
-            print("Exception occurred while calling AI server:", str(e))
-
-    threading.Thread(target=send_request).start()
-
-# Function to process and send frames
-def capture_and_process_stream():
-    cap = cv2.VideoCapture(RTSP_URL)
-
-    while cap.isOpened():
-        ret, frame = cap.read()
-        if not ret:
-            print("Failed to grab frame")
+# Function to generate video frames from the camera
+def generate_frames():
+    camera = cv2.VideoCapture(camera_id)
+    while True:
+        start_time = time.time()
+        success, frame = camera.read()
+        if not success:
             break
+        else:
+            ret, buffer = cv2.imencode('.jpg', frame)
+            frame = buffer.tobytes()
+            # Concatenate frame and yield for streaming
+            yield (b'--frame\r\n'
+                   b'Content-Type: image/jpeg\r\n\r\n' + frame + b'\r\n')
+            elapsed_time = time.time() - start_time
+            logging.debug(f"Frame generation time: {elapsed_time} seconds")
 
-        # Resize the frame for easier handling and encoding
-        resized_frame = cv2.resize(frame, (640, 480))
 
-        # Convert frame to JPEG format and encode as base64 for WebSocket
-        _, buffer = cv2.imencode('.jpg', resized_frame)
-        img_bytes = buffer.tobytes()
-        img_base64 = base64.b64encode(img_bytes).decode('utf-8')
-
-        # Send the frame to the WebSocket clients
-        socketio.emit('frame', {'image': img_base64})
-
-        # Call the asynchronous API function
-        send_image_to_api_async(img_base64)
-
-        # Frame delay to control stream rate (adjust as needed)
-        time.sleep(1)
-
-    cap.release()
-
-# Endpoint for the web interface
+# Route to render the HTML template
 @app.route('/')
 def index():
     return render_template('index.html')
+    # return redirect(url_for('video_feed')) #to render live stream directly
 
-# Start capturing stream in a background thread
-@socketio.on('connect')
-def on_connect():
-    print("Client connected")
-    socketio.start_background_task(target=capture_and_process_stream)
 
-@socketio.on('disconnect')
-def on_disconnect():
-    print("Client disconnected")
+# Asynchronous function to handle offer exchange
+async def offer_async():
+    params = await request.json
+    offer = RTCSessionDescription(sdp=params["sdp"], type=params["type"])
 
-# Run the app
-if __name__ == '__main__':
-    socketio.run(app, host='0.0.0.0', port=5000)
+    # Create an RTCPeerConnection instance
+    pc = RTCPeerConnection()
+
+    # Generate a unique ID for the RTCPeerConnection
+    pc_id = "PeerConnection(%s)" % uuid.uuid4()
+    pc_id = pc_id[:8]
+
+    # Create a data channel named "chat"
+    # pc.createDataChannel("chat")
+
+    # Create and set the local description
+    await pc.createOffer(offer)
+    await pc.setLocalDescription(offer)
+
+    # Prepare the response data with local SDP and type
+    response_data = {"sdp": pc.localDescription.sdp, "type": pc.localDescription.type}
+
+    return jsonify(response_data)
+
+
+# Wrapper function for running the asynchronous offer function
+def offer():
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+
+    future = asyncio.run_coroutine_threadsafe(offer_async(), loop)
+    return future.result()
+
+
+# Route to handle the offer request
+@app.route('/offer', methods=['POST'])
+def offer_route():
+    return offer()
+
+
+# Route to stream video frames
+@app.route('/video_feed')
+def video_feed():
+    return Response(generate_frames(), mimetype='multipart/x-mixed-replace; boundary=frame')
+
+
+# Run the Flask app
+if __name__ == "__main__":
+    app.run(debug=True, host='0.0.0.0')
