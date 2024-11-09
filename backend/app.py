@@ -6,18 +6,20 @@ import uuid
 import asyncio
 import logging
 import time
+from flask_cors import CORS  # Import CORS
 
 # Create a Flask app instance
 app = Flask(__name__, static_url_path='/static')
+CORS(app)
 
 # Set to keep track of RTCPeerConnection instances
 pcs = set()
-camera_id = 0  # replace with "rtsp://admin:OINVHA@192.168.122.32:554/ch1/main"
+camera_id = "rtsp://admin:OINVHA@192.168.102.12:554/ch1/main"  # replace with "rtsp://admin:OINVHA@192.168.102.12:554/ch1/main"
 
 
 # Function to generate video frames from the camera
 def generate_frames():
-    camera = cv2.VideoCapture(camera_id)
+    camera = cv2.VideoCapture(camera_id, cv2.CAP_FFMPEG)
     while True:
         start_time = time.time()
         success, frame = camera.read()
@@ -84,7 +86,6 @@ def offer_route():
 @app.route('/video_feed')
 def video_feed():
     return Response(generate_frames(), mimetype='multipart/x-mixed-replace; boundary=frame')
-
 
 # Run the Flask app
 if __name__ == "__main__":
