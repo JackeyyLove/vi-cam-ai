@@ -96,12 +96,35 @@ def generate_frames():
         success, frame = camera.read()
         if not success:
             break
-        else:
-            ret, buffer = cv2.imencode('.jpg', frame)
-            frame = buffer.tobytes()
-            # Concatenate frame and yield for streaming
-            yield (b'--frame\r\n'
-                   b'Content-Type: image/jpeg\r\n\r\n' + frame + b'\r\n')
+            # Draw rectangles for adult-child detection
+        if "result" in latest_adult_child_response:
+            for detection in latest_adult_child_response["result"]:
+                coords = detection["coords"]
+                # Draw the rectangle based on coords: [x1, y1, x2, y2]
+                cv2.rectangle(frame, (int(coords[0]), int(coords[1])), (int(coords[2]), int(coords[3])),
+                              (0, 255, 0), 2)
+                # Optional: add label for "adult/child" with confidence score
+                label = f"Class: {int(detection['class'])}, Conf: {detection['confidence_score']:.2f}"
+                cv2.putText(frame, label, (int(coords[0]), int(coords[1]) - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5,
+                            (0, 255, 0), 2)
+
+        # Draw rectangles for fire detection
+        if "result" in latest_fire_response:
+            for detection in latest_fire_response["result"]:
+                coords = detection["coords"]
+                # Draw the rectangle based on coords: [x1, y1, x2, y2]
+                cv2.rectangle(frame, (int(coords[0]), int(coords[1])), (int(coords[2]), int(coords[3])),
+                              (0, 0, 255), 2)
+                # Optional: add label for "fire" with confidence score
+                label = f"Fire, Conf: {detection['confidence_score']:.2f}"
+                cv2.putText(frame, label, (int(coords[0]), int(coords[1]) - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5,
+                            (0, 0, 255), 2)
+
+        # Encode frame to JPEG and yield for streaming
+        ret, buffer = cv2.imencode('.jpg', frame)
+        frame = buffer.tobytes()
+        yield (b'--frame\r\n'
+               b'Content-Type: image/jpeg\r\n\r\n' + frame + b'\r\n')
 
 
 # Route to render the HTML template
