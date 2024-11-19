@@ -14,10 +14,13 @@ from flask_cors import CORS  # Import CORS
 # Create a Flask app instance
 app = Flask(__name__, static_url_path='/static')
 CORS(app)
+TELEGRAM_BOT_TOKEN = "" #Replace with actual bot token
+TELEGRAM_CHAT_ID = "" # replace with actual chat id
+
 
 # Set to keep track of RTCPeerConnection instances
 pcs = set()
-camera_id = "rtsp://admin:OINVHA@192.168.1.180:554/ch1/main"  # Replace with your camera's RTSP URL
+camera_id = 0 #"rtsp://admin:OINVHA@192.168.1.180:554/ch1/main"  # Replace with your camera's RTSP URL
 AI_ADULT_DETECT = "https://equally-in-glowworm.ngrok-free.app/adult-child-detect"
 AI_FIRE_DETECT = "https://equally-in-glowworm.ngrok-free.app/fire-detect"
 
@@ -25,6 +28,18 @@ AI_FIRE_DETECT = "https://equally-in-glowworm.ngrok-free.app/fire-detect"
 latest_adult_child_response = {}
 latest_fire_response = {}
 
+def send_telegram_message(message):
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    payload = {
+        "chat_id": TELEGRAM_CHAT_ID,
+        "text": message
+    }
+    headers = {
+        "Content-Type": "application/json"
+    }
+    response = requests.post(url, json=payload, headers=headers)
+    print(response.text)
+    return response
 
 # Function to continuously request adult-child detection and store the full response
 def continuous_adult_child_detection():
@@ -48,6 +63,7 @@ def continuous_adult_child_detection():
             if response.status_code == 200:
                 # Update the latest full response
                 latest_adult_child_response = response.json()
+                #latest_adult_child_response["image"] = img_base64
 
         except Exception as e:
             print("Exception in adult-child detection:", e)
@@ -71,17 +87,27 @@ def continuous_fire_detection():
         # Prepare request data
         headers = {"Content-Type": "application/json"}
         data = {"image": img_base64}
-
+        print("Something")
         # Send request to AI server
         try:
             response = requests.post(AI_FIRE_DETECT, json=data, headers=headers)
             if response.status_code == 200:
                 # Update the latest full response
                 latest_fire_response = response.json()
+                #latest_fire_response["image"] = img_base64
+
+                # Check if fire is detected
+                for result in latest_fire_response.get("result", []):
+                    if result["class"] == 1.0:
+                        message = f"Fire detected with confidence score: {result['confidence_score']}"
+                        send_telegram_message(message)
+                        break
+            else: 
+                send_telegram_message("Error in fire detection")
         except Exception as e:
             print("Exception in fire detection:", e)
 
-        time.sleep(0.5)  # Optional delay to reduce API call frequency
+        time.sleep(0.5)
 
 
 # Start the continuous detection functions in separate threads
@@ -96,30 +122,6 @@ def generate_frames():
         success, frame = camera.read()
         if not success:
             break
-            # Draw rectangles for adult-child detection
-        if "result" in latest_adult_child_response:
-            for detection in latest_adult_child_response["result"]:
-                coords = detection["coords"]
-                # Draw the rectangle based on coords: [x1, y1, x2, y2]
-                cv2.rectangle(frame, (int(coords[0]), int(coords[1])), (int(coords[2]), int(coords[3])),
-                              (0, 255, 0), 2)
-                # Optional: add label for "adult/child" with confidence score
-                label = f"Class: {int(detection['class'])}, Conf: {detection['confidence_score']:.2f}"
-                cv2.putText(frame, label, (int(coords[0]), int(coords[1]) - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5,
-                            (0, 255, 0), 2)
-
-        # Draw rectangles for fire detection
-        if "result" in latest_fire_response:
-            for detection in latest_fire_response["result"]:
-                coords = detection["coords"]
-                # Draw the rectangle based on coords: [x1, y1, x2, y2]
-                cv2.rectangle(frame, (int(coords[0]), int(coords[1])), (int(coords[2]), int(coords[3])),
-                              (0, 0, 255), 2)
-                # Optional: add label for "fire" with confidence score
-                label = f"Fire, Conf: {detection['confidence_score']:.2f}"
-                cv2.putText(frame, label, (int(coords[0]), int(coords[1]) - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5,
-                            (0, 0, 255), 2)
-
         # Encode frame to JPEG and yield for streaming
         ret, buffer = cv2.imencode('.jpg', frame)
         frame = buffer.tobytes()
